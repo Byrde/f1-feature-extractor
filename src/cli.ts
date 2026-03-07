@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from "commander";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";

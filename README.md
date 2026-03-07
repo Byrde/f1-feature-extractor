@@ -1,17 +1,14 @@
 # F1 Feature Extractor
 
+[![npm](https://img.shields.io/npm/v/@byrde/f1-feature-extractor)](https://www.npmjs.com/package/@byrde/f1-feature-extractor)
+[![license](https://img.shields.io/npm/l/@byrde/f1-feature-extractor)](./LICENSE)
+
 Extract per-driver KPIs from F1 free practice sessions via the [OpenF1 API](https://openf1.org) and produce a report at multiple resolutions (per-session and aggregated weekend view).
-
-## Setup
-
-```bash
-npm install
-```
 
 ## Usage
 
 ```bash
-npm run cli [options]
+npx @byrde/f1-feature-extractor [options]
 ```
 
 | Option | Description |
@@ -27,16 +24,3 @@ npm run cli [options]
 - **sheets** — writes directly to a Google Sheets spreadsheet (default).
 - **csv** — writes one CSV file per session plus a combined weekend file to `./out/`.
 - **json** — prints the full feature payload to stdout.
-
-### Examples
-
-```bash
-npm run cli                                          # Latest weekend → Google Sheets
-npm run cli -- --meeting monza                       # Specific meeting → Google Sheets
-npm run cli -- --meeting monza --year 2024           # Historic meeting
-npm run cli -- -o json                               # Latest weekend → stdout as JSON
-npm run cli -- -o csv --meeting monza                # Monza → CSV files
-npm run cli -- --login                               # Re-authenticate with Google
-```
-
-The `--` after `npm run cli` is required by npm to forward arguments to the script.

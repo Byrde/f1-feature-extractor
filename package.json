@@ -5,6 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "f1-feature-extractor": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
