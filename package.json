@@ -1,7 +1,7 @@
 {
-  "name": "f1-session-feature-extractor",
+  "name": "@byrde/f1-feature-report",
   "version": "0.1.0",
-  "description": "Extract meaningful KPIs from F1 free practice sessions for GridRival team selection",
+  "description": "Extract per-driver KPIs from F1 free practice sessions and produce multi-resolution reports",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,7 +9,11 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/cli.ts"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT",
   "devDependencies": {
@@ -17,5 +21,11 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "googleapis": "^171.4.0",
+    "ora": "^9.3.0"
   }
 }

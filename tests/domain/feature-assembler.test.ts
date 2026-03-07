@@ -62,7 +62,6 @@ function createStint(overrides: Partial<Stint> = {}): Stint {
     lapStart: 1,
     lapEnd: 8,
     tyreAgeAtStart: 0,
-    stintType: null,
     ...overrides,
   };
 }
@@ -81,12 +80,14 @@ function createWeatherSnapshot(overrides: Partial<WeatherSnapshot> = {}): Weathe
   };
 }
 
-function buildLongRunLaps(start: number, count: number): Lap[] {
+function buildLongRunLaps(start: number, count: number, baseDate = "2024-09-01T10:05:00"): Lap[] {
+  const base = new Date(baseDate).getTime();
   return Array.from({ length: count }, (_, i) =>
     createLap({
       lapNumber: start + i,
       lapDuration: 86 + i * 0.1,
       isPitOutLap: i === 0 ? true : false,
+      dateStart: new Date(base + i * 90_000).toISOString(),
     })
   );
 }
@@ -126,6 +127,10 @@ describe("assembleSessionFeatures", () => {
     expect(driver.speed.bestStSpeed).toBeDefined();
     expect(driver.rankings).toBeDefined();
     expect(driver.rankings.bestLap).toBe(1);
+    expect(driver.confidence).toBeDefined();
+    expect(driver.confidence.overall).toBeDefined();
+    expect(driver.confidence.longRunPace.sampleSize).toBeGreaterThan(0);
+    expect(driver.confidence.degradation.meanRSquared).toBeTypeOf("number");
   });
 
   it("produces stint summaries with lap stats and degradation", () => {
@@ -149,12 +154,76 @@ describe("assembleSessionFeatures", () => {
     expect(stintSummary.stintNumber).toBe(1);
     expect(stintSummary.compound).toBe("MEDIUM");
     expect(stintSummary.lapCount).toBe(8);
-    expect(stintSummary.stintType).toBe("long_run");
     expect(stintSummary.bestLap).toBeTypeOf("number");
     expect(stintSummary.meanLap).toBeTypeOf("number");
     // long run with increasing times → positive degradation
     expect(stintSummary.degradationRate).toBeTypeOf("number");
     expect(stintSummary.degradationRate!).toBeGreaterThan(0);
+  });
+
+  it("computes per-stint weather from overlapping snapshots", () => {
+    const laps = buildLongRunLaps(1, 8, "2024-09-01T10:05:00");
+    const stint = createStint({ lapStart: 1, lapEnd: 8 });
+    const ds: DriverSession = {
+      driver: createDriver(),
+      laps,
+      stints: [stint],
+      pitStops: [],
+    };
+
+    const earlyWeather = createWeatherSnapshot({
+      date: "2024-09-01T10:06:00",
+      trackTemperature: 42,
+      airTemperature: 26,
+    });
+    const lateWeather = createWeatherSnapshot({
+      date: "2024-09-01T10:10:00",
+      trackTemperature: 46,
+      airTemperature: 28,
+    });
+    const outsideWeather = createWeatherSnapshot({
+      date: "2024-09-01T11:00:00",
+      trackTemperature: 55,
+      airTemperature: 35,
+    });
+
+    const session: Session = {
+      metadata: createMetadata(),
+      drivers: [ds],
+      weather: [earlyWeather, lateWeather, outsideWeather],
+    };
+
+    const result = assembleSessionFeatures(session);
+    const stintWeather = result.drivers[0].stints[0].weather!;
+
+    expect(stintWeather).not.toBeNull();
+    expect(stintWeather.meanTrackTemperature).toBe(44);
+    expect(stintWeather.meanAirTemperature).toBe(27);
+  });
+
+  it("falls back to nearest snapshot when none overlap the stint", () => {
+    const laps = [createLap({ lapNumber: 1, dateStart: "2024-09-01T10:30:00", lapDuration: 85 })];
+    const stint = createStint({ lapStart: 1, lapEnd: 1 });
+    const ds: DriverSession = {
+      driver: createDriver(),
+      laps,
+      stints: [stint],
+      pitStops: [],
+    };
+
+    const farBefore = createWeatherSnapshot({ date: "2024-09-01T10:00:00", trackTemperature: 38 });
+    const nearBefore = createWeatherSnapshot({ date: "2024-09-01T10:28:00", trackTemperature: 44 });
+
+    const session: Session = {
+      metadata: createMetadata(),
+      drivers: [ds],
+      weather: [farBefore, nearBefore],
+    };
+
+    const result = assembleSessionFeatures(session);
+    const stintWeather = result.drivers[0].stints[0].weather!;
+
+    expect(stintWeather.meanTrackTemperature).toBe(44);
   });
 
   it("uses default weather when no weather snapshots exist", () => {

@@ -24,6 +24,18 @@ function groupByDriver<T extends { driverNumber: number }>(
   return map;
 }
 
+function hasIncompleteDrivers(drivers: Driver[]): boolean {
+  return drivers.some((d) => !d.nameAcronym || !d.teamName);
+}
+
+function enrichDrivers(drivers: Driver[], roster: Driver[]): Driver[] {
+  const rosterMap = new Map(roster.map((d) => [d.driverNumber, d]));
+  return drivers.map((d) => {
+    if (d.nameAcronym && d.teamName) return d;
+    return rosterMap.get(d.driverNumber) ?? d;
+  });
+}
+
 function assembleDriverSessions(
   drivers: Driver[],
   laps: Lap[],
@@ -45,7 +57,7 @@ function assembleDriverSessions(
 export function createSessionFetcher(client: OpenF1Client): SessionFetcher {
   return {
     async fetchSession(sessionKey: number): Promise<Session> {
-      const [metadata, drivers, laps, stints, pitStops, weather] =
+      const [metadata, sessionDrivers, laps, stints, pitStops, weather] =
         await Promise.all([
           client.fetchSession(sessionKey),
           client.fetchDrivers(sessionKey),
@@ -57,6 +69,12 @@ export function createSessionFetcher(client: OpenF1Client): SessionFetcher {
 
       if (!metadata) {
         throw new Error(`Session not found: ${sessionKey}`);
+      }
+
+      let drivers = sessionDrivers;
+      if (hasIncompleteDrivers(sessionDrivers)) {
+        const meetingRoster = await client.fetchDriversByMeeting(metadata.meetingKey);
+        drivers = enrichDrivers(sessionDrivers, meetingRoster);
       }
 
       return {

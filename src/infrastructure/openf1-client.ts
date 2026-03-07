@@ -5,6 +5,9 @@ import type {
   WeatherSnapshot,
   Driver,
   SessionMetadata,
+  Meeting,
+  GridEntry,
+  SessionResult,
   Compound,
 } from "../domain/session.js";
 
@@ -29,7 +32,7 @@ interface RawLap {
 interface RawStint {
   driver_number: number;
   stint_number: number;
-  compound: string;
+  compound: string | null;
   lap_start: number;
   lap_end: number;
   tyre_age_at_start: number;
@@ -63,6 +66,15 @@ interface RawDriver {
   team_colour: string;
 }
 
+interface RawMeeting {
+  meeting_key: number;
+  meeting_name: string;
+  country_name: string;
+  circuit_short_name: string;
+  date_start: string;
+  year: number;
+}
+
 interface RawSession {
   session_key: number;
   meeting_key: number;
@@ -73,6 +85,27 @@ interface RawSession {
   date_start: string;
   date_end: string;
   year: number;
+}
+
+interface RawGridEntry {
+  driver_number: number;
+  position: number;
+  lap_duration: number | null;
+  meeting_key: number;
+  session_key: number;
+}
+
+interface RawSessionResult {
+  driver_number: number;
+  position: number;
+  dnf: boolean;
+  dns: boolean;
+  dsq: boolean;
+  number_of_laps: number;
+  gap_to_leader: number | string | null;
+  duration: number | number[] | null;
+  meeting_key: number;
+  session_key: number;
 }
 
 function mapLap(raw: RawLap): Lap {
@@ -95,11 +128,10 @@ function mapStint(raw: RawStint): Stint {
   return {
     driverNumber: raw.driver_number,
     stintNumber: raw.stint_number,
-    compound: raw.compound.toUpperCase() as Compound,
+    compound: raw.compound ? (raw.compound.toUpperCase() as Compound) : null,
     lapStart: raw.lap_start,
     lapEnd: raw.lap_end,
     tyreAgeAtStart: raw.tyre_age_at_start,
-    stintType: null,
   };
 }
 
@@ -137,6 +169,17 @@ function mapDriver(raw: RawDriver): Driver {
   };
 }
 
+function mapMeeting(raw: RawMeeting): Meeting {
+  return {
+    meetingKey: raw.meeting_key,
+    meetingName: raw.meeting_name,
+    countryName: raw.country_name,
+    circuitShortName: raw.circuit_short_name,
+    dateStart: raw.date_start,
+    year: raw.year,
+  };
+}
+
 function mapSession(raw: RawSession): SessionMetadata {
   return {
     sessionKey: raw.session_key,
@@ -151,6 +194,26 @@ function mapSession(raw: RawSession): SessionMetadata {
   };
 }
 
+function mapGridEntry(raw: RawGridEntry): GridEntry {
+  return {
+    driverNumber: raw.driver_number,
+    position: raw.position,
+    lapDuration: raw.lap_duration,
+  };
+}
+
+function mapSessionResult(raw: RawSessionResult): SessionResult {
+  return {
+    driverNumber: raw.driver_number,
+    position: raw.position,
+    dnf: raw.dnf,
+    dns: raw.dns,
+    dsq: raw.dsq,
+    numberOfLaps: raw.number_of_laps,
+    gapToLeader: raw.gap_to_leader,
+  };
+}
+
 function buildUrl(endpoint: string, params: QueryParams): string {
   const url = new URL(`${BASE_URL}/${endpoint}`);
   for (const [key, value] of Object.entries(params)) {
@@ -161,35 +224,113 @@ function buildUrl(endpoint: string, params: QueryParams): string {
   return url.toString();
 }
 
+const MAX_RETRIES = 5;
+const BASE_DELAY_MS = 1000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
 async function fetchJson<T>(url: string): Promise<T[]> {
-  const response = await fetch(url);
-  if (!response.ok) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const response = await fetch(url);
+
+    if (response.ok) {
+      return response.json() as Promise<T[]>;
+    }
+
+    if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+      const retryAfter = response.headers.get("retry-after");
+      const waitMs = retryAfter
+        ? Number(retryAfter) * 1000
+        : BASE_DELAY_MS * 2 ** attempt;
+      await delay(waitMs);
+      continue;
+    }
+
     throw new Error(`OpenF1 API error: ${response.status} ${response.statusText}`);
   }
-  return response.json() as Promise<T[]>;
+
+  throw new Error("OpenF1 API error: max retries exceeded");
+}
+
+export interface MeetingSearchParams {
+  year?: number;
+  countryName?: string;
+  circuitShortName?: string;
+}
+
+export interface SessionSearchParams {
+  year?: number;
+  meetingKey?: number;
+  sessionType?: string;
 }
 
 export interface OpenF1Client {
+  queryMeetings(params?: MeetingSearchParams): Promise<Meeting[]>;
   fetchSession(sessionKey: number): Promise<SessionMetadata | null>;
+  querySessions(params?: SessionSearchParams): Promise<SessionMetadata[]>;
   fetchDrivers(sessionKey: number): Promise<Driver[]>;
+  fetchDriversByMeeting(meetingKey: number): Promise<Driver[]>;
   fetchLaps(sessionKey: number): Promise<Lap[]>;
   fetchStints(sessionKey: number): Promise<Stint[]>;
   fetchPitStops(sessionKey: number): Promise<PitStop[]>;
   fetchWeather(sessionKey: number): Promise<WeatherSnapshot[]>;
+  fetchStartingGrid(sessionKey: number): Promise<GridEntry[]>;
+  fetchSessionResult(sessionKey: number): Promise<SessionResult[]>;
+}
+
+function deduplicateDrivers(drivers: Driver[]): Driver[] {
+  const map = new Map<number, Driver>();
+  for (const d of drivers) {
+    const existing = map.get(d.driverNumber);
+    if (!existing || (!existing.nameAcronym && d.nameAcronym)) {
+      map.set(d.driverNumber, d);
+    }
+  }
+  return [...map.values()];
 }
 
 export function createOpenF1Client(): OpenF1Client {
   return {
+    async queryMeetings(params?: MeetingSearchParams): Promise<Meeting[]> {
+      const query: QueryParams = {};
+      if (params?.year !== undefined) query.year = params.year;
+      if (params?.countryName !== undefined) query.country_name = params.countryName;
+      if (params?.circuitShortName !== undefined) query.circuit_short_name = params.circuitShortName;
+      const url = buildUrl("meetings", query);
+      const results = await fetchJson<RawMeeting>(url);
+      return results.map(mapMeeting);
+    },
+
     async fetchSession(sessionKey: number): Promise<SessionMetadata | null> {
       const url = buildUrl("sessions", { session_key: sessionKey });
       const results = await fetchJson<RawSession>(url);
       return results.length > 0 ? mapSession(results[0]) : null;
     },
 
+    async querySessions(params?: SessionSearchParams): Promise<SessionMetadata[]> {
+      const query: QueryParams = {};
+      if (params?.year !== undefined) query.year = params.year;
+      if (params?.meetingKey !== undefined) query.meeting_key = params.meetingKey;
+      if (params?.sessionType !== undefined) query.session_type = params.sessionType;
+      const url = buildUrl("sessions", query);
+      const results = await fetchJson<RawSession>(url);
+      return results.map(mapSession);
+    },
+
     async fetchDrivers(sessionKey: number): Promise<Driver[]> {
       const url = buildUrl("drivers", { session_key: sessionKey });
       const results = await fetchJson<RawDriver>(url);
       return results.map(mapDriver);
+    },
+
+    async fetchDriversByMeeting(meetingKey: number): Promise<Driver[]> {
+      const url = buildUrl("drivers", { meeting_key: meetingKey });
+      const results = await fetchJson<RawDriver>(url);
+      return deduplicateDrivers(results.map(mapDriver));
     },
 
     async fetchLaps(sessionKey: number): Promise<Lap[]> {
@@ -214,6 +355,18 @@ export function createOpenF1Client(): OpenF1Client {
       const url = buildUrl("weather", { session_key: sessionKey });
       const results = await fetchJson<RawWeather>(url);
       return results.map(mapWeather);
+    },
+
+    async fetchStartingGrid(sessionKey: number): Promise<GridEntry[]> {
+      const url = buildUrl("starting_grid", { session_key: sessionKey });
+      const results = await fetchJson<RawGridEntry>(url);
+      return results.map(mapGridEntry);
+    },
+
+    async fetchSessionResult(sessionKey: number): Promise<SessionResult[]> {
+      const url = buildUrl("session_result", { session_key: sessionKey });
+      const results = await fetchJson<RawSessionResult>(url);
+      return results.map(mapSessionResult);
     },
   };
 }

@@ -12,8 +12,11 @@ import type {
 
 function createMockClient(overrides: Partial<OpenF1Client> = {}): OpenF1Client {
   return {
+    queryMeetings: vi.fn().mockResolvedValue([]),
+    querySessions: vi.fn().mockResolvedValue([]),
     fetchSession: vi.fn().mockResolvedValue(null),
     fetchDrivers: vi.fn().mockResolvedValue([]),
+    fetchDriversByMeeting: vi.fn().mockResolvedValue([]),
     fetchLaps: vi.fn().mockResolvedValue([]),
     fetchStints: vi.fn().mockResolvedValue([]),
     fetchPitStops: vi.fn().mockResolvedValue([]),
@@ -64,7 +67,6 @@ const mockStint: Stint = {
   lapStart: 1,
   lapEnd: 10,
   tyreAgeAtStart: 0,
-  stintType: null,
 };
 
 const mockPitStop: PitStop = {
@@ -137,5 +139,49 @@ describe("createSessionFetcher", () => {
     expect(session.drivers[0].laps).toEqual([]);
     expect(session.drivers[0].stints).toEqual([]);
     expect(session.drivers[0].pitStops).toEqual([]);
+  });
+
+  it("enriches incomplete driver data from meeting-level roster", async () => {
+    const incompleteDriver: Driver = {
+      driverNumber: 1,
+      firstName: null as unknown as string,
+      lastName: null as unknown as string,
+      nameAcronym: null as unknown as string,
+      teamName: null as unknown as string,
+      teamColour: null as unknown as string,
+    };
+
+    const client = createMockClient({
+      fetchSession: vi.fn().mockResolvedValue(mockMetadata),
+      fetchDrivers: vi.fn().mockResolvedValue([incompleteDriver]),
+      fetchDriversByMeeting: vi.fn().mockResolvedValue([mockDriver]),
+      fetchLaps: vi.fn().mockResolvedValue([mockLap]),
+      fetchStints: vi.fn().mockResolvedValue([mockStint]),
+      fetchPitStops: vi.fn().mockResolvedValue([]),
+      fetchWeather: vi.fn().mockResolvedValue([]),
+    });
+
+    const fetcher = createSessionFetcher(client);
+    const session = await fetcher.fetchSession(9158);
+
+    expect(client.fetchDriversByMeeting).toHaveBeenCalledWith(mockMetadata.meetingKey);
+    expect(session.drivers[0].driver.nameAcronym).toBe("VER");
+    expect(session.drivers[0].driver.teamName).toBe("Red Bull Racing");
+  });
+
+  it("skips meeting lookup when all drivers have complete data", async () => {
+    const client = createMockClient({
+      fetchSession: vi.fn().mockResolvedValue(mockMetadata),
+      fetchDrivers: vi.fn().mockResolvedValue([mockDriver]),
+      fetchLaps: vi.fn().mockResolvedValue([mockLap]),
+      fetchStints: vi.fn().mockResolvedValue([mockStint]),
+      fetchPitStops: vi.fn().mockResolvedValue([]),
+      fetchWeather: vi.fn().mockResolvedValue([]),
+    });
+
+    const fetcher = createSessionFetcher(client);
+    await fetcher.fetchSession(9158);
+
+    expect(client.fetchDriversByMeeting).not.toHaveBeenCalled();
   });
 });

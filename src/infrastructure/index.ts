@@ -1,4 +1,10 @@
 export { createOpenF1Client } from "./openf1-client.js";
-export type { OpenF1Client } from "./openf1-client.js";
+export type { OpenF1Client, MeetingSearchParams, SessionSearchParams } from "./openf1-client.js";
 export { createSessionFetcher } from "./session-fetcher.js";
 export type { SessionFetcher } from "./session-fetcher.js";
+export { createSessionResolver } from "./session-resolver.js";
+export type { SessionResolver } from "./session-resolver.js";
+export { createGoogleSheetsClient } from "./google-sheets-client.js";
+export type { GoogleSheetsClient, SpreadsheetRef, CellValue } from "./google-sheets-client.js";
+export { createHistoryFetcher } from "./history-fetcher.js";
+export type { HistoryFetcher } from "./history-fetcher.js";

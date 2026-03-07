@@ -76,19 +76,167 @@ describe("OpenF1Client", () => {
     const stints = await client.fetchStints(9158);
 
     expect(stints[0].compound).toBe("MEDIUM");
-    expect(stints[0].stintType).toBeNull();
   });
 
-  it("throws on API error", async () => {
+  it("queryMeetings maps snake_case to camelCase", async () => {
+    const client = createOpenF1Client();
+    mockResponse([
+      {
+        meeting_key: 1229,
+        meeting_name: "Bahrain Grand Prix",
+        country_name: "Bahrain",
+        circuit_short_name: "Sakhir",
+        date_start: "2024-02-29",
+        year: 2024,
+      },
+    ]);
+
+    const meetings = await client.queryMeetings({ year: 2024 });
+
+    expect(meetings).toEqual([
+      {
+        meetingKey: 1229,
+        meetingName: "Bahrain Grand Prix",
+        countryName: "Bahrain",
+        circuitShortName: "Sakhir",
+        dateStart: "2024-02-29",
+        year: 2024,
+      },
+    ]);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.openf1.org/v1/meetings?year=2024"
+    );
+  });
+
+  it("queryMeetings passes country_name and circuit_short_name filters", async () => {
+    const client = createOpenF1Client();
+    mockResponse([]);
+
+    await client.queryMeetings({
+      year: 2024,
+      countryName: "Bahrain",
+      circuitShortName: "Sakhir",
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.openf1.org/v1/meetings?year=2024&country_name=Bahrain&circuit_short_name=Sakhir"
+    );
+  });
+
+  it("fetchDriversByMeeting deduplicates by driver number", async () => {
+    const client = createOpenF1Client();
+    mockResponse([
+      { driver_number: 1, first_name: "Max", last_name: "Verstappen", name_acronym: "VER", team_name: "Red Bull Racing", team_colour: "3671C6" },
+      { driver_number: 1, first_name: null, last_name: null, name_acronym: null, team_name: null, team_colour: null },
+      { driver_number: 44, first_name: "Lewis", last_name: "Hamilton", name_acronym: "HAM", team_name: "Ferrari", team_colour: "E80020" },
+    ]);
+
+    const drivers = await client.fetchDriversByMeeting(1279);
+
+    expect(drivers).toHaveLength(2);
+    expect(drivers[0].nameAcronym).toBe("VER");
+    expect(drivers[1].nameAcronym).toBe("HAM");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.openf1.org/v1/drivers?meeting_key=1279"
+    );
+  });
+
+  it("fetchStartingGrid maps snake_case to camelCase", async () => {
+    const client = createOpenF1Client();
+    mockResponse([
+      {
+        driver_number: 1,
+        position: 1,
+        lap_duration: 76.732,
+        meeting_key: 1143,
+        session_key: 7783,
+      },
+      {
+        driver_number: 63,
+        position: 2,
+        lap_duration: 76.968,
+        meeting_key: 1143,
+        session_key: 7783,
+      },
+    ]);
+
+    const grid = await client.fetchStartingGrid(7783);
+
+    expect(grid).toEqual([
+      { driverNumber: 1, position: 1, lapDuration: 76.732 },
+      { driverNumber: 63, position: 2, lapDuration: 76.968 },
+    ]);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.openf1.org/v1/starting_grid?session_key=7783"
+    );
+  });
+
+  it("fetchSessionResult maps fields including dnf/dns/dsq flags", async () => {
+    const client = createOpenF1Client();
+    mockResponse([
+      {
+        driver_number: 1,
+        position: 1,
+        dnf: false,
+        dns: false,
+        dsq: false,
+        number_of_laps: 57,
+        gap_to_leader: 0,
+        duration: 5765.432,
+        meeting_key: 1143,
+        session_key: 7783,
+      },
+      {
+        driver_number: 16,
+        position: 18,
+        dnf: true,
+        dns: false,
+        dsq: false,
+        number_of_laps: 23,
+        gap_to_leader: "+34 LAP(S)",
+        duration: null,
+        meeting_key: 1143,
+        session_key: 7783,
+      },
+    ]);
+
+    const results = await client.fetchSessionResult(7783);
+
+    expect(results).toEqual([
+      {
+        driverNumber: 1,
+        position: 1,
+        dnf: false,
+        dns: false,
+        dsq: false,
+        numberOfLaps: 57,
+        gapToLeader: 0,
+      },
+      {
+        driverNumber: 16,
+        position: 18,
+        dnf: true,
+        dns: false,
+        dsq: false,
+        numberOfLaps: 23,
+        gapToLeader: "+34 LAP(S)",
+      },
+    ]);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.openf1.org/v1/session_result?session_key=7783"
+    );
+  });
+
+  it("throws on non-retryable API error", async () => {
     const client = createOpenF1Client();
     mockFetch.mockResolvedValueOnce({
       ok: false,
-      status: 404,
-      statusText: "Not Found",
+      status: 403,
+      statusText: "Forbidden",
     });
 
     await expect(client.fetchLaps(99999)).rejects.toThrow(
-      "OpenF1 API error: 404 Not Found"
+      "OpenF1 API error: 403 Forbidden"
     );
   });
 });

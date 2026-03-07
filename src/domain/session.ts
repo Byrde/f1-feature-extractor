@@ -1,7 +1,5 @@
 export type Compound = "SOFT" | "MEDIUM" | "HARD" | "INTERMEDIATE" | "WET";
 
-export type StintType = "quali_sim" | "long_run" | "aero_check" | "installation";
-
 export interface Lap {
   readonly driverNumber: number;
   readonly lapNumber: number;
@@ -19,11 +17,10 @@ export interface Lap {
 export interface Stint {
   readonly driverNumber: number;
   readonly stintNumber: number;
-  readonly compound: Compound;
+  readonly compound: Compound | null;
   readonly lapStart: number;
   readonly lapEnd: number;
   readonly tyreAgeAtStart: number;
-  readonly stintType: StintType | null;
 }
 
 export interface PitStop {
@@ -54,6 +51,15 @@ export interface Driver {
   readonly teamColour: string;
 }
 
+export interface Meeting {
+  readonly meetingKey: number;
+  readonly meetingName: string;
+  readonly countryName: string;
+  readonly circuitShortName: string;
+  readonly dateStart: string;
+  readonly year: number;
+}
+
 export interface SessionMetadata {
   readonly sessionKey: number;
   readonly meetingKey: number;
@@ -64,6 +70,22 @@ export interface SessionMetadata {
   readonly dateStart: string;
   readonly dateEnd: string;
   readonly year: number;
+}
+
+export interface GridEntry {
+  readonly driverNumber: number;
+  readonly position: number;
+  readonly lapDuration: number | null;
+}
+
+export interface SessionResult {
+  readonly driverNumber: number;
+  readonly position: number;
+  readonly dnf: boolean;
+  readonly dns: boolean;
+  readonly dsq: boolean;
+  readonly numberOfLaps: number;
+  readonly gapToLeader: number | string | null;
 }
 
 export interface DriverSession {

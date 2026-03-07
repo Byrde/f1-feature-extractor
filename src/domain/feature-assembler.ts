@@ -2,6 +2,7 @@ import type {
   Session,
   DriverSession,
   Lap,
+  Stint,
   WeatherSnapshot,
 } from "./session.js";
 import type {
@@ -11,8 +12,6 @@ import type {
   StintSummary,
   WeatherSummary,
 } from "./features.js";
-import type { ClassifiedStint } from "./stint-classifier.js";
-import { classifyStints } from "./stint-classifier.js";
 import {
   computeBestLapByCompound,
   computeLongRunAveragePace,
@@ -24,6 +23,7 @@ import {
 import { computeSpeedMetrics } from "./speed-analyzer.js";
 import { computeWeatherSummary } from "./weather-analyzer.js";
 import { computeDriverRankings } from "./ranking.js";
+import { computeConfidence } from "./confidence.js";
 
 const DEFAULT_WEATHER: WeatherSummary = {
   meanTrackTemperature: 0,
@@ -44,7 +44,7 @@ export function assembleSessionFeatures(session: Session): SessionFeatures {
   const weather = computeWeatherSummary(session.weather) ?? DEFAULT_WEATHER;
 
   const unrankedDrivers = session.drivers.map((ds) =>
-    assembleDriverFeatures(ds, session.metadata.sessionKey, weather)
+    assembleDriverFeatures(ds, session.metadata.sessionKey, weather, session.weather)
   );
 
   const rankings = computeDriverRankings(unrankedDrivers);
@@ -64,26 +64,31 @@ export function assembleSessionFeatures(session: Session): SessionFeatures {
 function assembleDriverFeatures(
   ds: DriverSession,
   sessionKey: number,
-  weather: WeatherSummary
+  weather: WeatherSummary,
+  weatherSnapshots: readonly WeatherSnapshot[]
 ): DriverFeatures {
-  const classified = classifyStints(ds.stints, ds.laps);
-  const { laps } = ds;
+  const { laps, stints } = ds;
 
   const sectorPerf = computeSectorPerformance(laps);
-  const degradationRates = computeDegradationRate(laps, classified);
+  const degradationRates = computeDegradationRate(laps, stints);
+  const longRunPace = computeLongRunAveragePace(laps, stints);
+  const fuelCorrectedPace = computeFuelCorrectedLongRunPace(laps, stints);
+  const consistency = computeConsistency(laps, stints);
 
-  const stints = classified.map((stint) =>
-    buildStintSummary(stint, laps, degradationRates)
+  const stintSummaries = stints.map((stint) =>
+    buildStintSummary(stint, laps, degradationRates, weatherSnapshots)
   );
 
   return {
     driverNumber: ds.driver.driverNumber,
     nameAcronym: ds.driver.nameAcronym,
     teamName: ds.driver.teamName,
+    teamColour: ds.driver.teamColour,
     sessionKey,
     pace: {
-      bestLapByCompound: computeBestLapByCompound(laps, classified),
-      longRunAveragePace: computeLongRunAveragePace(laps, classified),
+      bestLapByCompound: computeBestLapByCompound(laps, stints),
+      longRunAveragePace: longRunPace.value,
+      longRunSampleSize: longRunPace.sampleSize,
       bestSector1: sectorPerf.bestSector1,
       bestSector2: sectorPerf.bestSector2,
       bestSector3: sectorPerf.bestSector3,
@@ -93,13 +98,21 @@ function assembleDriverFeatures(
     },
     degradation: {
       degradationRateByStint: degradationRates,
-      fuelCorrectedLongRunPace: computeFuelCorrectedLongRunPace(laps, classified),
+      fuelCorrectedLongRunPace: fuelCorrectedPace.value,
+      fuelCorrectedSampleSize: fuelCorrectedPace.sampleSize,
     },
-    speed: computeSpeedMetrics(laps, classified),
+    speed: computeSpeedMetrics(laps),
     consistency: {
-      longRunLapTimeStdDev: computeConsistency(laps, classified),
+      longRunLapTimeStdDev: consistency.value,
+      consistencySampleSize: consistency.sampleSize,
     },
-    stints,
+    confidence: computeConfidence(
+      longRunPace.sampleSize,
+      fuelCorrectedPace.sampleSize,
+      consistency.sampleSize,
+      degradationRates
+    ),
+    stints: stintSummaries,
     weather,
     totalLaps: laps.length,
     rankings: UNRANKED,
@@ -107,9 +120,10 @@ function assembleDriverFeatures(
 }
 
 function buildStintSummary(
-  stint: ClassifiedStint,
+  stint: Stint,
   laps: readonly Lap[],
-  degradationRates: readonly { stintNumber: number; degradationRate: number }[]
+  degradationRates: readonly { stintNumber: number; degradationRate: number }[],
+  weatherSnapshots: readonly WeatherSnapshot[]
 ): StintSummary {
   const stintLaps = laps.filter(
     (lap) => lap.lapNumber >= stint.lapStart && lap.lapNumber <= stint.lapEnd
@@ -122,7 +136,6 @@ function buildStintSummary(
 
   return {
     stintNumber: stint.stintNumber,
-    stintType: stint.stintType,
     compound: stint.compound,
     lapCount: stintLaps.length,
     bestLap: timedLaps.length > 0 ? Math.min(...timedLaps) : null,
@@ -130,5 +143,38 @@ function buildStintSummary(
       ? timedLaps.reduce((sum, t) => sum + t, 0) / timedLaps.length
       : null,
     degradationRate: deg?.degradationRate ?? null,
+    weather: computeStintWeather(stintLaps, weatherSnapshots),
   };
+}
+
+function computeStintWeather(
+  stintLaps: readonly Lap[],
+  snapshots: readonly WeatherSnapshot[]
+): WeatherSummary | null {
+  if (snapshots.length === 0 || stintLaps.length === 0) return null;
+
+  const firstLapTime = new Date(stintLaps[0].dateStart).getTime();
+  const lastLap = stintLaps[stintLaps.length - 1];
+  const lastLapEnd = new Date(lastLap.dateStart).getTime()
+    + (lastLap.lapDuration ?? 90) * 1000;
+
+  const overlapping = snapshots.filter((s) => {
+    const t = new Date(s.date).getTime();
+    return t >= firstLapTime && t <= lastLapEnd;
+  });
+
+  if (overlapping.length > 0) {
+    return computeWeatherSummary(overlapping)!;
+  }
+
+  let nearest = snapshots[0];
+  let minDist = Math.abs(new Date(nearest.date).getTime() - firstLapTime);
+  for (const s of snapshots) {
+    const dist = Math.abs(new Date(s.date).getTime() - firstLapTime);
+    if (dist < minDist) {
+      nearest = s;
+      minDist = dist;
+    }
+  }
+  return computeWeatherSummary([nearest])!;
 }

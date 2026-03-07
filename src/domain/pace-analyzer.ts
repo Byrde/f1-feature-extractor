@@ -1,6 +1,13 @@
 import type { Compound, Lap, Stint } from "./session.js";
 import type { StintDegradation } from "./features.js";
 
+const LONG_RUN_MIN_LAPS = 5;
+
+export interface MetricWithSampleSize {
+  readonly value: number | null;
+  readonly sampleSize: number;
+}
+
 export interface SectorPerformance {
   readonly bestSector1: number | null;
   readonly bestSector2: number | null;
@@ -22,7 +29,7 @@ export function computeBestLapByCompound(
     }
 
     const stint = findStintForLap(lap.lapNumber, stints);
-    if (!stint) {
+    if (!stint || !stint.compound) {
       continue;
     }
 
@@ -38,10 +45,10 @@ export function computeBestLapByCompound(
 export function computeLongRunAveragePace(
   laps: readonly Lap[],
   stints: readonly Stint[]
-): number | null {
-  const longRunStints = stints.filter((s) => s.stintType === "long_run");
+): MetricWithSampleSize {
+  const longRunStints = stints.filter((s) => isLongRun(s, laps));
   if (longRunStints.length === 0) {
-    return null;
+    return { value: null, sampleSize: 0 };
   }
 
   const validLapTimes: number[] = [];
@@ -67,10 +74,10 @@ export function computeLongRunAveragePace(
   }
 
   if (validLapTimes.length === 0) {
-    return null;
+    return { value: null, sampleSize: 0 };
   }
 
-  return mean(validLapTimes);
+  return { value: mean(validLapTimes), sampleSize: validLapTimes.length };
 }
 
 const FUEL_CORRECTION_PER_LAP = 0.06;
@@ -78,10 +85,10 @@ const FUEL_CORRECTION_PER_LAP = 0.06;
 export function computeFuelCorrectedLongRunPace(
   laps: readonly Lap[],
   stints: readonly Stint[]
-): number | null {
-  const longRunStints = stints.filter((s) => s.stintType === "long_run");
+): MetricWithSampleSize {
+  const longRunStints = stints.filter((s) => isLongRun(s, laps));
   if (longRunStints.length === 0) {
-    return null;
+    return { value: null, sampleSize: 0 };
   }
 
   const correctedLapTimes: number[] = [];
@@ -110,10 +117,10 @@ export function computeFuelCorrectedLongRunPace(
   }
 
   if (correctedLapTimes.length === 0) {
-    return null;
+    return { value: null, sampleSize: 0 };
   }
 
-  return mean(correctedLapTimes);
+  return { value: mean(correctedLapTimes), sampleSize: correctedLapTimes.length };
 }
 
 export function computeSectorPerformance(laps: readonly Lap[]): SectorPerformance {
@@ -145,7 +152,7 @@ export function computeDegradationRate(
   laps: readonly Lap[],
   stints: readonly Stint[]
 ): StintDegradation[] {
-  const longRunStints = stints.filter((s) => s.stintType === "long_run");
+  const longRunStints = stints.filter((s) => isLongRun(s, laps));
   const results: StintDegradation[] = [];
 
   for (const stint of longRunStints) {
@@ -156,15 +163,16 @@ export function computeDegradationRate(
       continue;
     }
 
-    const slope = linearRegressionSlope(validLaps);
-    if (slope === null) {
+    const regression = linearRegression(validLaps);
+    if (regression === null) {
       continue;
     }
 
     results.push({
       stintNumber: stint.stintNumber,
       compound: stint.compound,
-      degradationRate: slope,
+      degradationRate: regression.slope,
+      rSquared: regression.rSquared,
       lapCount: validLaps.length,
     });
   }
@@ -193,9 +201,14 @@ function getValidLapsForDegradation(
   return timedLaps.filter((l) => l.lapDuration <= threshold);
 }
 
-function linearRegressionSlope(
+interface RegressionResult {
+  readonly slope: number;
+  readonly rSquared: number;
+}
+
+function linearRegression(
   points: Array<{ lapIndex: number; lapDuration: number }>
-): number | null {
+): RegressionResult | null {
   const n = points.length;
   if (n < 2) {
     return null;
@@ -218,7 +231,20 @@ function linearRegressionSlope(
     return null;
   }
 
-  return (n * sumXY - sumX * sumY) / denominator;
+  const slope = (n * sumXY - sumX * sumY) / denominator;
+  const intercept = (sumY - slope * sumX) / n;
+
+  const meanY = sumY / n;
+  let ssTot = 0;
+  let ssRes = 0;
+  for (const { lapIndex, lapDuration } of points) {
+    ssTot += (lapDuration - meanY) ** 2;
+    ssRes += (lapDuration - (intercept + slope * lapIndex)) ** 2;
+  }
+
+  const rSquared = ssTot === 0 ? 0 : 1 - ssRes / ssTot;
+
+  return { slope, rSquared };
 }
 
 function findStintForLap(
@@ -239,10 +265,10 @@ function getLapsForStint(laps: readonly Lap[], stint: Stint): Lap[] {
 export function computeConsistency(
   laps: readonly Lap[],
   stints: readonly Stint[]
-): number | null {
-  const longRunStints = stints.filter((s) => s.stintType === "long_run");
+): MetricWithSampleSize {
+  const longRunStints = stints.filter((s) => isLongRun(s, laps));
   if (longRunStints.length === 0) {
-    return null;
+    return { value: null, sampleSize: 0 };
   }
 
   const validLapTimes: number[] = [];
@@ -268,10 +294,10 @@ export function computeConsistency(
   }
 
   if (validLapTimes.length < 2) {
-    return null;
+    return { value: null, sampleSize: validLapTimes.length };
   }
 
-  return standardDeviation(validLapTimes);
+  return { value: standardDeviation(validLapTimes), sampleSize: validLapTimes.length };
 }
 
 function mean(values: number[]): number {
@@ -282,4 +308,11 @@ function standardDeviation(values: number[]): number {
   const avg = mean(values);
   const squaredDiffs = values.map((v) => (v - avg) ** 2);
   return Math.sqrt(mean(squaredDiffs));
+}
+
+function isLongRun(stint: Stint, laps: readonly Lap[]): boolean {
+  const timedLaps = getLapsForStint(laps, stint).filter(
+    (lap) => !lap.isPitOutLap && lap.lapDuration !== null
+  );
+  return timedLaps.length >= LONG_RUN_MIN_LAPS;
 }
