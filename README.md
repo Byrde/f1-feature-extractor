@@ -1,4 +1,4 @@
-# F1 Session Feature Extractor
+# F1 Feature Extractor
 
 Extract per-driver KPIs from F1 free practice sessions via the [OpenF1 API](https://openf1.org) and produce a report at multiple resolutions (per-session and aggregated weekend view).
 
