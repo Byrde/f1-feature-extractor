@@ -15,6 +15,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Byrde/f1-feature-extractor"
+  },
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^25.3.3",
