@@ -1,6 +1,6 @@
 {
   "name": "@byrde/f1-feature-extractor",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "Extract per-driver KPIs from F1 free practice sessions and produce multi-resolution reports",
   "type": "module",
   "main": "dist/index.js",
