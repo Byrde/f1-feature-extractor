@@ -3,6 +3,7 @@ import { writeReport, buildReportSlug, buildCombinedData } from "../../src/api/s
 import type { GoogleSheetsClient, SpreadsheetRef, CellValue } from "../../src/infrastructure/google-sheets-client.js";
 import type { SessionFeatures, DriverFeatures, CrossSessionFeatures, CrossSessionDriverFeatures } from "../../src/domain/features.js";
 import type { MeetingRaceResult } from "../../src/domain/history.js";
+import type { Driver } from "../../src/domain/session.js";
 
 function createMockClient(existingRef?: SpreadsheetRef): GoogleSheetsClient & {
   writtenRanges: { range: string; values: CellValue[][] }[];
@@ -26,15 +27,19 @@ function createMockClient(existingRef?: SpreadsheetRef): GoogleSheetsClient & {
       sheetTitles.forEach((name, i) => sheetIds.set(name, i));
       return { spreadsheetId: "test-id", url: "https://docs.google.com/spreadsheets/d/test-id", sheetIds };
     },
-    async findSpreadsheet(_title: string) {
+    async findSpreadsheet(_title: string, _parentFolderId?: string) {
       return existingRef ?? null;
     },
     async getSpreadsheet(spreadsheetId: string) {
       return existingRef ?? { spreadsheetId, url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}`, sheetIds: new Map() };
     },
+    async resolveFolderPath(_path: string) {
+      return "mock-folder-id";
+    },
     async deleteSheet(_spreadsheetId: string, sheetId: number) {
       deletedSheetIds.push(sheetId);
     },
+    async renameSheet() {},
     async addSheet(_spreadsheetId: string, title: string) {
       addedSheetTitles.push(title);
       return nextSheetId++;
@@ -237,6 +242,30 @@ describe("writeReport with history", () => {
 
     const historyWrite = client.writtenRanges.find((r) => r.range.includes("History"));
     expect(historyWrite).toBeUndefined();
+  });
+
+  it("writes only History tab when sessions are empty but history is provided", async () => {
+    const client = createMockClient();
+    const history = createTestHistory();
+    const fallbackDrivers: Driver[] = [
+      { driverNumber: 1, firstName: "Max", lastName: "Verstappen", nameAcronym: "VER", teamName: "Red Bull Racing", teamColour: "3671C6" },
+      { driverNumber: 44, firstName: "Lewis", lastName: "Hamilton", nameAcronym: "HAM", teamName: "Ferrari", teamColour: "E80020" },
+    ];
+
+    await writeReport(client, "Test", [], history, undefined, undefined, fallbackDrivers);
+
+    const overviewWrite = client.writtenRanges.find((r) => r.range.includes("Overview"));
+    expect(overviewWrite).toBeUndefined();
+
+    const stintsWrite = client.writtenRanges.find((r) => r.range.includes("Stints"));
+    expect(stintsWrite).toBeUndefined();
+
+    const historyWrite = client.writtenRanges.find((r) => r.range.includes("History"));
+    expect(historyWrite).toBeDefined();
+
+    const data = historyWrite!.values;
+    expect(data[2][0]).toBe("HAM");
+    expect(data[3][0]).toBe("VER");
   });
 });
 

@@ -17,6 +17,7 @@ npx @byrde/f1-feature-extractor [options]
 | `-y, --year <number>` | Season year (e.g. `2024`). Defaults to the current year. |
 | `-o, --output <format>` | Output format: `sheets`, `csv`, or `json`. Defaults to `sheets`. |
 | `-p, --project <id>` | Google Cloud project ID (required for `sheets` output). |
+| `-d, --drive-path <path>` | Google Drive folder path for the report (e.g. `F1/Reports/2024`). Missing folders are created automatically. Omit to place the spreadsheet in your Drive root. |
 | `--login` | Force re-authentication with Google. |
 
 ### Output formats

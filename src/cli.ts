@@ -15,12 +15,12 @@ import type { SessionResolver } from "./infrastructure/session-resolver.js";
 import { assembleSessionFeatures } from "./domain/feature-assembler.js";
 import { assembleWeekendFeatures } from "./domain/weekend-assembler.js";
 import { writeReport, buildReportSlug } from "./api/sheets-report.js";
-import type { SessionMetadata, Session } from "./domain/session.js";
+import type { SessionMetadata, Session, Meeting, Driver } from "./domain/session.js";
 import type { SessionFeatures } from "./domain/features.js";
 
 const ADC_PATH = join(homedir(), ".config", "gcloud", "application_default_credentials.json");
 const HISTORY_CACHE_DIR = join(homedir(), ".cache", "f1-report");
-const SCOPES = "https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive.metadata.readonly,https://www.googleapis.com/auth/cloud-platform";
+const SCOPES = "https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/cloud-platform";
 
 function detectGcloudProject(): string | undefined {
   if (process.env.GOOGLE_CLOUD_PROJECT) return process.env.GOOGLE_CLOUD_PROJECT;
@@ -87,18 +87,18 @@ function ensureGoogleAuth(): void {
   spinner.succeed("Authenticated with Google");
 }
 
-export async function resolveSessions(
+export async function resolveMeeting(
   resolver: SessionResolver,
   meetingName?: string,
-  year?: number
-): Promise<SessionMetadata[]> {
+  year?: number,
+): Promise<Meeting> {
   if (meetingName) {
-    return resolver.resolvePracticeSessions(meetingName, year);
+    return resolver.resolveMeeting(meetingName, year);
   }
-  return resolver.resolveLatestPracticeSessions(year);
+  return resolver.resolveLatestMeeting(year);
 }
 
-async function report(meetingName?: string, year?: number, project?: string): Promise<void> {
+async function report(meetingName?: string, year?: number, project?: string, drivePath?: string): Promise<void> {
   ensureGoogleAuth();
   const projectId = resolveProjectId(project);
 
@@ -107,16 +107,29 @@ async function report(meetingName?: string, year?: number, project?: string): Pr
   const resolver = createSessionResolver(apiClient);
   const sheetsClient = createGoogleSheetsClient(projectId);
 
+  let folderId: string | undefined;
+  if (drivePath) {
+    const folderSpinner = ora(`Resolving Drive path "${drivePath}"...`).start();
+    folderId = await sheetsClient.resolveFolderPath(drivePath);
+    folderSpinner.succeed(`Drive folder: ${drivePath}`);
+  }
+
   const spinner = ora(
     meetingName
       ? `Resolving sessions for "${meetingName}"...`
-      : "Resolving latest practice sessions..."
+      : "Resolving latest race weekend..."
   ).start();
 
-  const sessions = await resolveSessions(resolver, meetingName, year);
-  const meetingLabel = `${sessions[0].countryName} - ${sessions[0].circuitShortName}`;
-  const sessionList = sessions.map((s) => `${s.sessionName} (${s.dateStart.split("T")[0]})`).join(", ");
-  spinner.succeed(`${meetingLabel}: ${sessionList}`);
+  const meeting = await resolveMeeting(resolver, meetingName, year);
+  const meetingLabel = `${meeting.countryName} - ${meeting.circuitShortName}`;
+  const sessions = await resolver.fetchPracticeSessions(meeting.meetingKey);
+
+  if (sessions.length > 0) {
+    const sessionList = sessions.map((s) => `${s.sessionName} (${s.dateStart.split("T")[0]})`).join(", ");
+    spinner.succeed(`${meetingLabel}: ${sessionList}`);
+  } else {
+    spinner.succeed(`${meetingLabel}: no practice sessions started yet`);
+  }
 
   const rawSessions: Session[] = [];
   const results: SessionFeatures[] = [];
@@ -133,19 +146,29 @@ async function report(meetingName?: string, year?: number, project?: string): Pr
     ? assembleWeekendFeatures(rawSessions, results)
     : undefined;
 
+  const resolvedYear = year ?? meeting.year;
   const historyFetcher = createHistoryFetcher(apiClient, HISTORY_CACHE_DIR);
   const historySpinner = ora("Fetching historical race results...").start();
-  const resolvedYear = year ?? sessions[0].year;
-  const history = await historyFetcher.fetchSeasonHistory(resolvedYear, sessions[0].meetingKey);
+  const history = await historyFetcher.fetchSeasonHistory(resolvedYear, meeting.meetingKey);
   if (history.length > 0) {
     historySpinner.succeed(`Historical results: ${history.length} prior race(s)`);
   } else {
     historySpinner.succeed("No prior races this season (season opener)");
   }
 
+  if (results.length === 0 && history.length === 0) {
+    console.log(`\n  ${chalk.yellow("Nothing to report yet — no practice data or prior race results.")}\n`);
+    return;
+  }
+
+  let drivers: readonly Driver[] | undefined;
+  if (results.length === 0) {
+    drivers = await apiClient.fetchDriversByMeeting(meeting.meetingKey);
+  }
+
   const writeSpinner = ora("Resolving spreadsheet...").start();
-  const title = buildReportSlug(sessions[0].countryName, sessions[0].circuitShortName, sessions[0].year);
-  const report = await writeReport(sheetsClient, title, results, history, combined);
+  const title = buildReportSlug(meeting.countryName, meeting.circuitShortName, meeting.year);
+  const report = await writeReport(sheetsClient, title, results, history, combined, folderId, drivers);
   writeSpinner.succeed(report.created ? `Created new sheet: ${title}` : `Updated existing sheet: ${title}`);
 
   console.log(`\n  ${chalk.green.bold(report.url)}\n`);
@@ -157,8 +180,9 @@ const program = new Command()
   .option("-m, --meeting <name>", "meeting name to search (e.g. bahrain, monza)")
   .option("-y, --year <number>", "season year (e.g. 2024). Defaults to current year.", parseInt)
   .option("-p, --project <id>", "Google Cloud project ID for Sheets API quota")
+  .option("-d, --drive-path <path>", "Google Drive folder path for the report (e.g. F1/Reports)")
   .option("--login", "force re-authentication with Google")
-  .action(async (opts: { meeting?: string; year?: number; project?: string; login?: boolean }) => {
+  .action(async (opts: { meeting?: string; year?: number; project?: string; drivePath?: string; login?: boolean }) => {
     if (opts.login) {
       const spinner = ora("Opening browser for Google authentication...").start();
       try {
@@ -170,7 +194,7 @@ const program = new Command()
       }
       if (!opts.meeting) return;
     }
-    await report(opts.meeting, opts.year, opts.project);
+    await report(opts.meeting, opts.year, opts.project, opts.drivePath);
   });
 
 const isDirectRun = process.argv[1]?.includes("cli");

@@ -1,6 +1,7 @@
 import type { sheets_v4 } from "googleapis";
 import type { SessionFeatures, DriverFeatures, StintSummary, CrossSessionFeatures, CrossSessionDriverFeatures } from "../domain/features.js";
 import type { MeetingRaceResult, DriverRaceResult } from "../domain/history.js";
+import type { Driver } from "../domain/session.js";
 import type { GoogleSheetsClient, CellValue } from "../infrastructure/google-sheets-client.js";
 import { formatLapTime } from "./format.js";
 
@@ -736,7 +737,10 @@ interface DriverInfo {
   teamColour: string;
 }
 
-function buildDriverMap(sessions: readonly SessionFeatures[]): Map<number, DriverInfo> {
+function buildDriverMap(
+  sessions: readonly SessionFeatures[],
+  fallbackDrivers?: readonly Driver[],
+): Map<number, DriverInfo> {
   const map = new Map<number, DriverInfo>();
   for (const session of sessions) {
     for (const driver of session.drivers) {
@@ -745,6 +749,17 @@ function buildDriverMap(sessions: readonly SessionFeatures[]): Map<number, Drive
           nameAcronym: driver.nameAcronym,
           teamName: driver.teamName,
           teamColour: driver.teamColour,
+        });
+      }
+    }
+  }
+  if (fallbackDrivers) {
+    for (const d of fallbackDrivers) {
+      if (!map.has(d.driverNumber)) {
+        map.set(d.driverNumber, {
+          nameAcronym: d.nameAcronym,
+          teamName: d.teamName,
+          teamColour: d.teamColour,
         });
       }
     }
@@ -787,8 +802,9 @@ function statusNote(status: string): string | null {
 function buildHistoryData(
   history: readonly MeetingRaceResult[],
   sessions: readonly SessionFeatures[],
+  fallbackDrivers?: readonly Driver[],
 ): { data: CellValue[][]; driverColours: string[]; totalCols: number } {
-  const driverMap = buildDriverMap(sessions);
+  const driverMap = buildDriverMap(sessions, fallbackDrivers);
   const sortedDrivers = collectSortedDriverNumbers(history, driverMap);
 
   const totalCols = HISTORY_FIXED_COLS.length + history.length * COLS_PER_MEETING;
@@ -980,10 +996,11 @@ async function resolveSpreadsheet(
   client: GoogleSheetsClient,
   title: string,
   managedTabs: readonly string[],
+  folderId?: string,
 ): Promise<{ spreadsheetId: string; url: string; sheetIds: Map<string, number>; created: boolean }> {
-  const existing = await client.findSpreadsheet(title);
+  const existing = await client.findSpreadsheet(title, folderId);
   if (!existing) {
-    const created = await client.createSpreadsheet(title, [...managedTabs]);
+    const created = await client.createSpreadsheet(title, [...managedTabs], folderId);
     return {
       spreadsheetId: created.spreadsheetId,
       url: created.url,
@@ -993,14 +1010,21 @@ async function resolveSpreadsheet(
   }
 
   const sheetIds = new Map(existing.sheetIds);
+  const staleIds: number[] = [];
+
   for (const tab of managedTabs) {
     const existingId = sheetIds.get(tab);
     if (existingId != null) {
-      await client.deleteSheet(existing.spreadsheetId, existingId);
+      await client.renameSheet(existing.spreadsheetId, existingId, `__${tab}`);
+      staleIds.push(existingId);
       sheetIds.delete(tab);
     }
     const newId = await client.addSheet(existing.spreadsheetId, tab);
     sheetIds.set(tab, newId);
+  }
+
+  for (const id of staleIds) {
+    await client.deleteSheet(existing.spreadsheetId, id);
   }
 
   return { spreadsheetId: existing.spreadsheetId, url: existing.url, sheetIds, created: false };
@@ -1012,53 +1036,60 @@ export async function writeReport(
   sessions: readonly SessionFeatures[],
   history?: readonly MeetingRaceResult[],
   combined?: CrossSessionFeatures,
+  folderId?: string,
+  fallbackDrivers?: readonly Driver[],
 ): Promise<ReportResult> {
+  const hasSessions = sessions.length > 0;
   const hasHistory = history !== undefined && history.length > 0;
   const hasCombined = combined !== undefined && combined.drivers.length > 0;
-  const managedTabs: string[] = [...BASE_TABS];
+
+  const managedTabs: string[] = [];
+  if (hasSessions) managedTabs.push(...BASE_TABS);
   if (hasCombined) managedTabs.push(COMBINED_TAB);
   if (hasHistory) managedTabs.push(HISTORY_TAB);
 
-  const { spreadsheetId, url, sheetIds, created } = await resolveSpreadsheet(client, title, managedTabs);
+  const { spreadsheetId, url, sheetIds, created } = await resolveSpreadsheet(client, title, managedTabs, folderId);
 
-  // Build Overview data
-  const groupHeaderRow: CellValue[] = [];
-  for (const g of OVERVIEW_GROUPS) {
-    groupHeaderRow.push(g.label);
-    for (let i = 1; i < g.cols; i++) groupHeaderRow.push(null);
-  }
+  const formatRequests: sheets_v4.Schema$Request[] = [];
 
-  const overviewData: CellValue[][] = [groupHeaderRow, OVERVIEW_HEADERS];
-  for (const session of sessions) {
-    for (const driver of session.drivers) {
-      overviewData.push(overviewRow(session, driver));
+  if (hasSessions) {
+    // Build Overview data
+    const groupHeaderRow: CellValue[] = [];
+    for (const g of OVERVIEW_GROUPS) {
+      groupHeaderRow.push(g.label);
+      for (let i = 1; i < g.cols; i++) groupHeaderRow.push(null);
     }
-  }
 
-  // Build Stints data
-  const stintsData: CellValue[][] = [STINTS_HEADERS];
-  const stintMeta: { teamColour: string }[] = [];
-  for (const session of sessions) {
-    for (const driver of session.drivers) {
-      for (const stint of driver.stints) {
-        stintsData.push(stintRow(session.sessionName, driver, stint));
-        stintMeta.push({ teamColour: driver.teamColour });
+    const overviewData: CellValue[][] = [groupHeaderRow, OVERVIEW_HEADERS];
+    for (const session of sessions) {
+      for (const driver of session.drivers) {
+        overviewData.push(overviewRow(session, driver));
       }
     }
+
+    // Build Stints data
+    const stintsData: CellValue[][] = [STINTS_HEADERS];
+    const stintMeta: { teamColour: string }[] = [];
+    for (const session of sessions) {
+      for (const driver of session.drivers) {
+        for (const stint of driver.stints) {
+          stintsData.push(stintRow(session.sessionName, driver, stint));
+          stintMeta.push({ teamColour: driver.teamColour });
+        }
+      }
+    }
+
+    await client.writeValues(spreadsheetId, `'${OVERVIEW_TAB}'!A1`, overviewData);
+    await client.writeValues(spreadsheetId, `'${STINTS_TAB}'!A1`, stintsData);
+
+    const overviewSheetId = sheetIds.get(OVERVIEW_TAB)!;
+    const stintsSheetId = sheetIds.get(STINTS_TAB)!;
+
+    formatRequests.push(
+      ...buildOverviewFormatting(overviewSheetId, sessions, OVERVIEW_HEADERS.length),
+      ...buildStintsFormatting(stintsSheetId, stintMeta, STINTS_HEADERS.length),
+    );
   }
-
-  // Write values
-  await client.writeValues(spreadsheetId, `'${OVERVIEW_TAB}'!A1`, overviewData);
-  await client.writeValues(spreadsheetId, `'${STINTS_TAB}'!A1`, stintsData);
-
-  // Apply formatting
-  const overviewSheetId = sheetIds.get(OVERVIEW_TAB)!;
-  const stintsSheetId = sheetIds.get(STINTS_TAB)!;
-
-  const formatRequests = [
-    ...buildOverviewFormatting(overviewSheetId, sessions, OVERVIEW_HEADERS.length),
-    ...buildStintsFormatting(stintsSheetId, stintMeta, STINTS_HEADERS.length),
-  ];
 
   // Build and write Combined tab
   if (hasCombined) {
@@ -1076,14 +1107,16 @@ export async function writeReport(
 
   // Build and write History tab
   if (hasHistory) {
-    const { data: historyData, driverColours, totalCols } = buildHistoryData(history, sessions);
+    const { data: historyData, driverColours, totalCols } = buildHistoryData(history, sessions, fallbackDrivers);
     await client.writeValues(spreadsheetId, `'${HISTORY_TAB}'!A1`, historyData);
 
     const historySheetId = sheetIds.get(HISTORY_TAB)!;
     formatRequests.push(...buildHistoryFormatting(historySheetId, history, driverColours, totalCols));
   }
 
-  await client.batchFormat(spreadsheetId, formatRequests);
+  if (formatRequests.length > 0) {
+    await client.batchFormat(spreadsheetId, formatRequests);
+  }
 
   return { url, created };
 }

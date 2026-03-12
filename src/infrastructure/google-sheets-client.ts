@@ -11,14 +11,19 @@ export interface SpreadsheetRef {
 export interface GoogleSheetsClient {
   createSpreadsheet(
     title: string,
-    sheetTitles: string[]
+    sheetTitles: string[],
+    parentFolderId?: string
   ): Promise<SpreadsheetRef>;
 
-  findSpreadsheet(title: string): Promise<SpreadsheetRef | null>;
+  findSpreadsheet(title: string, parentFolderId?: string): Promise<SpreadsheetRef | null>;
 
   getSpreadsheet(spreadsheetId: string): Promise<SpreadsheetRef>;
 
+  resolveFolderPath(path: string): Promise<string>;
+
   deleteSheet(spreadsheetId: string, sheetId: number): Promise<void>;
+
+  renameSheet(spreadsheetId: string, sheetId: number, newTitle: string): Promise<void>;
 
   addSheet(spreadsheetId: string, title: string): Promise<number>;
 
@@ -59,7 +64,7 @@ export function createGoogleSheetsClient(projectId?: string): GoogleSheetsClient
   const auth = new google.auth.GoogleAuth({
     scopes: [
       "https://www.googleapis.com/auth/spreadsheets",
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive",
     ],
   });
 
@@ -78,7 +83,8 @@ export function createGoogleSheetsClient(projectId?: string): GoogleSheetsClient
   return {
     async createSpreadsheet(
       title: string,
-      sheetTitles: string[]
+      sheetTitles: string[],
+      parentFolderId?: string
     ): Promise<SpreadsheetRef> {
       const response = await sheets.spreadsheets.create({
         requestBody: {
@@ -89,12 +95,32 @@ export function createGoogleSheetsClient(projectId?: string): GoogleSheetsClient
         },
       });
 
-      return toRef(response.data.spreadsheetId!, response.data.sheets);
+      const spreadsheetId = response.data.spreadsheetId!;
+
+      if (parentFolderId) {
+        const file = await drive.files.get({
+          fileId: spreadsheetId,
+          fields: "parents",
+        });
+        const previousParents = (file.data.parents ?? []).join(",");
+        await drive.files.update({
+          fileId: spreadsheetId,
+          addParents: parentFolderId,
+          removeParents: previousParents,
+        });
+      }
+
+      return toRef(spreadsheetId, response.data.sheets);
     },
 
-    async findSpreadsheet(title: string): Promise<SpreadsheetRef | null> {
+    async findSpreadsheet(title: string, parentFolderId?: string): Promise<SpreadsheetRef | null> {
+      let q = `name = '${title.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`;
+      if (parentFolderId) {
+        q += ` and '${parentFolderId}' in parents`;
+      }
+
       const response = await drive.files.list({
-        q: `name = '${title.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`,
+        q,
         fields: "files(id)",
         orderBy: "modifiedTime desc",
         pageSize: 1,
@@ -115,11 +141,57 @@ export function createGoogleSheetsClient(projectId?: string): GoogleSheetsClient
       return toRef(response.data.spreadsheetId!, response.data.sheets);
     },
 
+    async resolveFolderPath(path: string): Promise<string> {
+      const segments = path.split("/").filter(Boolean);
+      if (segments.length === 0) throw new Error("Drive path must contain at least one folder name");
+
+      let parentId = "root";
+      for (const segment of segments) {
+        const escapedName = segment.replace(/'/g, "\\'");
+        const response = await drive.files.list({
+          q: `name = '${escapedName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
+          fields: "files(id)",
+          pageSize: 1,
+        });
+
+        const existing = response.data.files?.[0];
+        if (existing?.id) {
+          parentId = existing.id;
+        } else {
+          const created = await drive.files.create({
+            requestBody: {
+              name: segment,
+              mimeType: "application/vnd.google-apps.folder",
+              parents: [parentId],
+            },
+            fields: "id",
+          });
+          parentId = created.data.id!;
+        }
+      }
+
+      return parentId;
+    },
+
     async deleteSheet(spreadsheetId: string, sheetId: number): Promise<void> {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
         requestBody: {
           requests: [{ deleteSheet: { sheetId } }],
+        },
+      });
+    },
+
+    async renameSheet(spreadsheetId: string, sheetId: number, newTitle: string): Promise<void> {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [{
+            updateSheetProperties: {
+              properties: { sheetId, title: newTitle },
+              fields: "title",
+            },
+          }],
         },
       });
     },

@@ -1,26 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { resolveSessions } from "../src/cli.js";
-import type { SessionMetadata } from "../src/domain/session.js";
+import { resolveMeeting } from "../src/cli.js";
+import type { Meeting } from "../src/domain/session.js";
 
-function makeSession(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
+function makeMeeting(overrides: Partial<Meeting> = {}): Meeting {
   return {
-    sessionKey: 9158,
     meetingKey: 1229,
-    sessionName: "Practice 1",
-    sessionType: "Practice",
-    circuitShortName: "Sakhir",
+    meetingName: "Bahrain Grand Prix",
     countryName: "Bahrain",
-    dateStart: "2024-02-29T11:30:00+00:00",
-    dateEnd: "2024-02-29T12:30:00+00:00",
+    circuitShortName: "Sakhir",
+    dateStart: "2024-02-29",
     year: 2024,
     ...overrides,
   };
 }
 
-function createMockResolver(sessions: SessionMetadata[]) {
+function createMockResolver(meeting: Meeting) {
   return {
-    resolvePracticeSessions: vi.fn().mockResolvedValue(sessions),
-    resolveLatestPracticeSessions: vi.fn().mockResolvedValue(sessions),
+    resolveMeeting: vi.fn().mockResolvedValue(meeting),
+    resolveLatestMeeting: vi.fn().mockResolvedValue(meeting),
+    fetchPracticeSessions: vi.fn().mockResolvedValue([]),
+    resolvePracticeSessions: vi.fn().mockResolvedValue([]),
+    resolveLatestPracticeSessions: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -28,44 +28,44 @@ beforeEach(() => {
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
-describe("resolveSessions", () => {
-  it("delegates to resolvePracticeSessions when meeting name is provided", async () => {
-    const sessions = [makeSession()];
-    const resolver = createMockResolver(sessions);
+describe("resolveMeeting", () => {
+  it("delegates to resolveMeeting when meeting name is provided", async () => {
+    const meeting = makeMeeting();
+    const resolver = createMockResolver(meeting);
 
-    const result = await resolveSessions(resolver, "bahrain");
+    const result = await resolveMeeting(resolver, "bahrain");
 
-    expect(result).toEqual(sessions);
-    expect(resolver.resolvePracticeSessions).toHaveBeenCalledWith("bahrain", undefined);
-    expect(resolver.resolveLatestPracticeSessions).not.toHaveBeenCalled();
+    expect(result).toEqual(meeting);
+    expect(resolver.resolveMeeting).toHaveBeenCalledWith("bahrain", undefined);
+    expect(resolver.resolveLatestMeeting).not.toHaveBeenCalled();
   });
 
-  it("delegates to resolveLatestPracticeSessions when no name is provided", async () => {
-    const sessions = [makeSession()];
-    const resolver = createMockResolver(sessions);
+  it("delegates to resolveLatestMeeting when no name is provided", async () => {
+    const meeting = makeMeeting();
+    const resolver = createMockResolver(meeting);
 
-    const result = await resolveSessions(resolver);
+    const result = await resolveMeeting(resolver);
 
-    expect(result).toEqual(sessions);
-    expect(resolver.resolveLatestPracticeSessions).toHaveBeenCalled();
-    expect(resolver.resolvePracticeSessions).not.toHaveBeenCalled();
+    expect(result).toEqual(meeting);
+    expect(resolver.resolveLatestMeeting).toHaveBeenCalled();
+    expect(resolver.resolveMeeting).not.toHaveBeenCalled();
   });
 
-  it("passes year to resolvePracticeSessions when both name and year are provided", async () => {
-    const sessions = [makeSession()];
-    const resolver = createMockResolver(sessions);
+  it("passes year to resolveMeeting when both name and year are provided", async () => {
+    const meeting = makeMeeting();
+    const resolver = createMockResolver(meeting);
 
-    await resolveSessions(resolver, "bahrain", 2023);
+    await resolveMeeting(resolver, "bahrain", 2023);
 
-    expect(resolver.resolvePracticeSessions).toHaveBeenCalledWith("bahrain", 2023);
+    expect(resolver.resolveMeeting).toHaveBeenCalledWith("bahrain", 2023);
   });
 
-  it("passes year to resolveLatestPracticeSessions when only year is provided", async () => {
-    const sessions = [makeSession()];
-    const resolver = createMockResolver(sessions);
+  it("passes year to resolveLatestMeeting when only year is provided", async () => {
+    const meeting = makeMeeting();
+    const resolver = createMockResolver(meeting);
 
-    await resolveSessions(resolver, undefined, 2023);
+    await resolveMeeting(resolver, undefined, 2023);
 
-    expect(resolver.resolveLatestPracticeSessions).toHaveBeenCalledWith(2023);
+    expect(resolver.resolveLatestMeeting).toHaveBeenCalledWith(2023);
   });
 });

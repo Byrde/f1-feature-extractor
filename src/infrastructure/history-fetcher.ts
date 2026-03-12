@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { OpenF1Client } from "./openf1-client.js";
-import type { Meeting, GridEntry, SessionResult } from "../domain/session.js";
+import type { Meeting, SessionMetadata, SessionResult } from "../domain/session.js";
 import type { DriverRaceResult, MeetingRaceResult, RaceStatus } from "../domain/history.js";
 
 export interface HistoryFetcher {
@@ -42,12 +42,12 @@ function deriveStatus(result: SessionResult): RaceStatus {
 }
 
 function assembleResults(
-  grid: readonly GridEntry[],
-  results: readonly SessionResult[],
+  qualiResults: readonly SessionResult[],
+  raceResults: readonly SessionResult[],
 ): DriverRaceResult[] {
-  const gridMap = new Map(grid.map((g) => [g.driverNumber, g.position]));
+  const gridMap = new Map(qualiResults.map((q) => [q.driverNumber, q.position]));
 
-  return results.map((r) => ({
+  return raceResults.map((r) => ({
     driverNumber: r.driverNumber,
     gridPosition: gridMap.get(r.driverNumber) ?? null,
     finishPosition: r.position,
@@ -104,6 +104,13 @@ export function createHistoryFetcher(
   };
 }
 
+function findSession(
+  sessions: readonly SessionMetadata[],
+  name: string,
+): SessionMetadata | undefined {
+  return sessions.find((s) => s.sessionName === name);
+}
+
 async function fetchMeetingResult(
   client: OpenF1Client,
   meeting: Meeting,
@@ -111,25 +118,28 @@ async function fetchMeetingResult(
   try {
     const sessions = await client.querySessions({
       meetingKey: meeting.meetingKey,
-      sessionType: "Race",
     });
 
-    const raceSession = sessions.find((s) => s.sessionName === "Race");
+    const raceSession = findSession(sessions, "Race");
     if (!raceSession) return null;
 
-    const [grid, results] = await Promise.all([
-      client.fetchStartingGrid(raceSession.sessionKey),
+    const qualiSession = findSession(sessions, "Qualifying");
+
+    const [qualiResults, raceResults] = await Promise.all([
+      qualiSession
+        ? client.fetchSessionResult(qualiSession.sessionKey)
+        : Promise.resolve([] as SessionResult[]),
       client.fetchSessionResult(raceSession.sessionKey),
     ]);
 
-    if (results.length === 0) return null;
+    if (raceResults.length === 0) return null;
 
     return {
       meetingKey: meeting.meetingKey,
       meetingName: meeting.meetingName,
       countryName: meeting.countryName,
       dateStart: meeting.dateStart,
-      results: assembleResults(grid, results),
+      results: assembleResults(qualiResults, raceResults),
     };
   } catch {
     return null;

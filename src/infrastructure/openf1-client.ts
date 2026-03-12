@@ -238,7 +238,8 @@ async function fetchJson<T>(url: string): Promise<T[]> {
     const response = await fetch(url);
 
     if (response.ok) {
-      return response.json() as Promise<T[]>;
+      const data: unknown = await response.json();
+      return Array.isArray(data) ? (data as T[]) : [];
     }
 
     if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {

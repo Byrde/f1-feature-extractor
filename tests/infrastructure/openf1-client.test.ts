@@ -227,6 +227,15 @@ describe("OpenF1Client", () => {
     );
   });
 
+  it("returns empty array when API responds with a non-array body", async () => {
+    const client = createOpenF1Client();
+    mockResponse({ detail: "No results found." });
+
+    const results = await client.fetchStartingGrid(99999);
+
+    expect(results).toEqual([]);
+  });
+
   it("throws on non-retryable API error", async () => {
     const client = createOpenF1Client();
     mockFetch.mockResolvedValueOnce({
